@@ -9,7 +9,6 @@ import os
 from typing import Optional
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 
@@ -27,12 +26,12 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS: bool = False
 
     # Spotify API Configuration
-    SPOTIFY_CLIENT_ID: str = os.environ.get("SPOTIFY_CLIENT_ID")
-    SPOTIFY_CLIENT_SECRET: str = os.environ.get("SPOTIFY_CLIENT_SECRET")
+    SPOTIFY_CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID")
+    SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET")
     SPOTIFY_REDIRECT_URI: str = os.environ.get(
         "SPOTIFY_REDIRECT_URI", "http://localhost:5000/auth/callback"
     )
-    SPOTIFY_SCOPE: str = os.environ.get("SPOTIFY_SCOPE")
+    SPOTIFY_SCOPE = os.environ.get("SPOTIFY_SCOPE")
     SPOTIFY_AUTH_URL: str = "https://accounts.spotify.com/authorize"
     SPOTIFY_TOKEN_URL: str = "https://accounts.spotify.com/api/token"
     SPOTIFY_API_BASE_URL: str = "https://api.spotify.com/v1"
@@ -92,7 +91,8 @@ class Config:
         # Checagem de variáveis obrigatórias
         missing = []
         for var in ["SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_SCOPE"]:
-            if not getattr(app.config, var, None):
+            value = app.config.get(var) or os.environ.get(var)
+            if not value:
                 missing.append(var)
         if missing:
             import warnings

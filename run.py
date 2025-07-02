@@ -9,7 +9,7 @@ import os
 from app import create_app, db
 from app.api.models import DeviceAuth
 
-app = create_app(os.getenv("FLASK_ENV", "development"))
+app = create_app(os.getenv("FLASK_ENV", "production"))
 
 
 # Create shell context for Flask CLI
