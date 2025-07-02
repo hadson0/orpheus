@@ -19,6 +19,47 @@ In Greek mythology, [**Orpheus**](https://en.wikipedia.org/wiki/Orpheus) was a l
 
 ---
 
+---
+
+## Table of Contents
+
+- [Orpheus - Spotify Voice Bridge API](#orpheus---spotify-voice-bridge-api)
+  - [Why "Orpheus"?](#why-orpheus)
+  - [Features](#features)
+  - [Table of Contents](#table-of-contents)
+  - [Quick Start](#quick-start)
+    - [1. Clone the Repository](#1-clone-the-repository)
+    - [2. Install Dependencies](#2-install-dependencies)
+      - [Linux](#linux)
+      - [Windows](#windows)
+    - [3. Configure Environment](#3-configure-environment)
+    - [4. Initialize the Database](#4-initialize-the-database)
+    - [5. Run the Server](#5-run-the-server)
+  - [API Overview](#api-overview)
+    - [Device Authentication](#device-authentication)
+    - [Voice Command](#voice-command)
+    - [Token Management](#token-management)
+    - [Utilities](#utilities)
+  - [Example: Voice Command Flow](#example-voice-command-flow)
+  - [Security](#security)
+  - [Requirements](#requirements)
+  - [License](#license)
+  - [Contributing](#contributing)
+  - [API Reference](#api-reference)
+    - [Device Authentication](#device-authentication-1)
+      - [`GET /qr/<device_id>`](#get-qrdevice_id)
+      - [`GET /auth/callback`](#get-authcallback)
+    - [Voice Command](#voice-command-1)
+      - [`POST /command`](#post-command)
+    - [Token Management](#token-management-1)
+      - [`POST /refresh`](#post-refresh)
+    - [Utilities](#utilities-1)
+      - [`GET /health`](#get-health)
+      - [`GET /device/<device_id>/status`](#get-devicedevice_idstatus)
+      - [`GET /u/<code>`](#get-ucode)
+    - [Interactive API Docs](#interactive-api-docs)
+
+---
 ## Quick Start
 
 ### 1. Clone the Repository
@@ -138,3 +179,108 @@ This project is licensed under the [GNU GPL v3](LICENSE).
 ## Contributing
 
 Pull requests and issues are welcome!
+
+---
+
+## API Reference
+
+### Device Authentication
+
+#### `GET /qr/<device_id>`
+Returns a PNG QR code for device authentication via Spotify OAuth2.
+
+**Path Parameters:**
+- `device_id` (string, required): Device identifier.
+
+**Responses:**
+- `200`: PNG image with QR code.
+- `400`: Invalid device ID.
+- `500`: Internal server error.
+
+---
+
+#### `GET /auth/callback`
+Handles Spotify OAuth2 callback.
+
+**Query Parameters:**
+- `code` (string, optional): Authorization code from Spotify.
+- `state` (string, optional): State parameter for CSRF protection.
+- `error` (string, optional): Error message from Spotify.
+
+**Responses:**
+- `200`: Success HTML page.
+- `400`: Error HTML page.
+- `500`: Internal server error.
+
+---
+
+### Voice Command
+
+#### `POST /command`
+Accepts a device ID and audio file, transcribes the command, and executes it on Spotify.
+
+**Form Data:**
+- `device_id` (string, required): Device identifier.
+- `audio` (file, required): Audio file with voice command.
+
+**Responses:**
+- `200`: Command processed.
+- `400`: Bad request.
+- `401`: Unauthorized.
+- `500`: Internal server error.
+
+---
+
+### Token Management
+
+#### `POST /refresh`
+Manually refreshes a device's Spotify token.
+
+**JSON Body:**
+- `device_id` (string, required): Device identifier.
+
+**Responses:**
+- `200`: Token refreshed.
+- `400`: Bad request or refresh failed.
+- `500`: Internal server error.
+
+---
+
+### Utilities
+
+#### `GET /health`
+Health check endpoint.
+
+**Responses:**
+- `200`: Service is healthy.
+
+---
+
+#### `GET /device/<device_id>/status`
+Returns authentication status for a device.
+
+**Path Parameters:**
+- `device_id` (string, required): Device identifier.
+
+**Responses:**
+- `200`: Device status.
+- `404`: Device not found.
+- `500`: Internal server error.
+
+---
+
+#### `GET /u/<code>`
+Redirects to the long URL from a short code.
+
+**Path Parameters:**
+- `code` (string, required): Short URL code.
+
+**Responses:**
+- `302`: Redirect to long URL.
+- `404`: Code not found.
+
+---
+
+### Interactive API Docs
+
+After running the server, access `/apidocs` for interactive Swagger documentation.

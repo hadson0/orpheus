@@ -11,6 +11,7 @@ from logging.handlers import RotatingFileHandler
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from flasgger import Swagger
 
 # Initialize extensions
 db = SQLAlchemy()
@@ -43,6 +44,9 @@ def create_app(config_name=None):
     # Initialize extensions with app
     db.init_app(app)
     migrate.init_app(app, db)
+
+    # Configure Swagger
+    Swagger(app)
 
     configure_logging(app)
     register_blueprints(app)

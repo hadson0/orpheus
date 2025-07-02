@@ -144,12 +144,25 @@ def generate_code(length=6):
 def generate_qr_code(device_id: str) -> Response:
     """
     Generate QR code for device authentication.
-
-    Args:
-        device_id: Unique identifier for the device.
-
-    Returns:
-        Response: PNG image of QR code containing the authorization URL.
+    ---
+    parameters:
+      - name: device_id
+        in: path
+        type: string
+        required: true
+        description: Device identifier
+    responses:
+      200:
+        description: PNG image with QR code
+        content:
+          image/png:
+            schema:
+              type: string
+              format: binary
+      400:
+        description: Invalid device ID
+      500:
+        description: Internal server error
     """
     try:
         if not device_id or len(device_id) > 255:
@@ -231,10 +244,31 @@ def generate_qr_code(device_id: str) -> Response:
 @api_bp.route("/auth/callback", methods=["GET"])
 def auth_callback() -> Response:
     """
-    Handle OAuth2 callback from Spotify.
-
-    Returns:
-        Response: HTML page indicating success or failure.
+    Handle Spotify OAuth2 callback.
+    ---
+    parameters:
+      - name: code
+        in: query
+        type: string
+        required: false
+        description: Authorization code from Spotify
+      - name: state
+        in: query
+        type: string
+        required: false
+        description: State parameter for CSRF protection
+      - name: error
+        in: query
+        type: string
+        required: false
+        description: Error message from Spotify
+    responses:
+      200:
+        description: Success HTML page
+      400:
+        description: Error HTML page
+      500:
+        description: Internal server error
     """
     code = request.args.get("code")
     state = request.args.get("state")
@@ -297,13 +331,29 @@ def auth_callback() -> Response:
 def process_command() -> Response:
     """
     Process voice command from device.
-
-    Expects multipart form data with:
-    - device_id: Device identifier
-    - audio: Audio file containing voice command
-
-    Returns:
-        Response: JSON indicating the action taken or error.
+    ---
+    consumes:
+      - multipart/form-data
+    parameters:
+      - name: device_id
+        in: formData
+        type: string
+        required: true
+        description: Device identifier
+      - name: audio
+        in: formData
+        type: file
+        required: true
+        description: Audio file with voice command
+    responses:
+      200:
+        description: Command processed
+      400:
+        description: Bad request
+      401:
+        description: Unauthorized
+      500:
+        description: Internal server error
     """
     try:
         device_id = request.form.get("device_id")
@@ -424,15 +474,27 @@ def process_command() -> Response:
 @api_bp.route("/refresh", methods=["POST"])
 def refresh_device_token() -> Response:
     """
-    Manually refresh token for a device.
-
-    Expects JSON body:
-    {
-        "device_id": "the_device_id"
-    }
-
-    Returns:
-        Response: JSON indicating success or failure.
+    Refresh device Spotify token.
+    ---
+    consumes:
+      - application/json
+    parameters:
+      - name: device_id
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            device_id:
+              type: string
+              description: Device identifier
+    responses:
+      200:
+        description: Token refreshed
+      400:
+        description: Bad request or refresh failed
+      500:
+        description: Internal server error
     """
     try:
         if not request.is_json:
@@ -506,6 +568,21 @@ def refresh_device_token() -> Response:
 
 @api_bp.route("/u/<string:code>", methods=["GET"])
 def redirect_short_url(code):
+    """
+    Redirect to long URL from short code.
+    ---
+    parameters:
+      - name: code
+        in: path
+        type: string
+        required: true
+        description: Short URL code
+    responses:
+      302:
+        description: Redirect to long URL
+      404:
+        description: Code not found
+    """
     short = ShortURL.query.filter_by(code=code).first()
     if not short:
         return jsonify({"error": "Not found"}), 404
@@ -518,10 +595,11 @@ def redirect_short_url(code):
 @api_bp.route("/health", methods=["GET"])
 def health_check() -> Response:
     """
-    Health check endpoint for monitoring.
-
-    Returns:
-        Response: JSON with service status.
+    Health check endpoint.
+    ---
+    responses:
+      200:
+        description: Service is healthy
     """
     return (
         jsonify(
@@ -538,13 +616,21 @@ def health_check() -> Response:
 @api_bp.route("/device/<string:device_id>/status", methods=["GET"])
 def device_status(device_id: str) -> Response:
     """
-    Get authentication status for a device (for debugging).
-
-    Args:
-        device_id: Device identifier.
-
-    Returns:
-        Response: JSON with device authentication status.
+    Get device authentication status.
+    ---
+    parameters:
+      - name: device_id
+        in: path
+        type: string
+        required: true
+        description: Device identifier
+    responses:
+      200:
+        description: Device status
+      404:
+        description: Device not found
+      500:
+        description: Internal server error
     """
     try:
         from app.services.auth_service import get_device_status
@@ -581,10 +667,11 @@ def device_status(device_id: str) -> Response:
 @api_bp.route("/", methods=["GET"])
 def api_info() -> Response:
     """
-    API information endpoint.
-
-    Returns:
-        Response: JSON with API information and available endpoints.
+    API information and available endpoints.
+    ---
+    responses:
+      200:
+        description: API info and endpoints
     """
     return (
         jsonify(

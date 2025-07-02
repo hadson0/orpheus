@@ -21,6 +21,9 @@ qrcode[pil]
 # Encryption
 cryptography
 
+# Swagger
+lasgger
+
 # Production Server
 gunicorn
 
