@@ -50,10 +50,6 @@ coverage.xml
 *.cover
 .hypothesis/
 
-# Migrations (keep structure but not migrations)
-migrations/versions/*
-!migrations/versions/.gitkeep
-
 # Logs
 logs/
 *.log
