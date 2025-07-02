@@ -9,6 +9,9 @@ python-dotenv
 # HTTP Requests
 requests
 
+# Spotify lib
+spotipy
+
 # OpenAI Integration
 openai
 
