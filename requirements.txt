@@ -1,0 +1,28 @@
+# Core
+Flask
+Flask-SQLAlchemy
+Flask-Migrate
+
+# Environment
+python-dotenv
+
+# HTTP Requests
+requests
+
+# OpenAI Integration
+openai
+
+# QR Code
+qrcode[pil]
+
+# Encryption
+cryptography
+
+# Production Server
+gunicorn
+
+# Development
+pytest
+pytest-cov
+black
+flake8
