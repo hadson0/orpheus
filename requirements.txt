@@ -22,7 +22,7 @@ qrcode[pil]
 cryptography
 
 # Swagger
-lasgger
+flasgger
 
 # Production Server
 gunicorn

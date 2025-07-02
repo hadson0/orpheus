@@ -4,8 +4,8 @@ Database models for Spotify Voice Bridge API.
 This module defines the SQLAlchemy models for storing device authentication data with encrypted tokens.
 """
 
-from datetime import datetime, timedelta, timezone
 from typing import Optional
+from datetime import datetime, timedelta, timezone
 from app import db
 from app.utils.encryption import encrypt, decrypt
 from sqlalchemy import event
