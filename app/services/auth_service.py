@@ -112,6 +112,7 @@ def generate_spotify_auth_url(device_id: str) -> str:
         "response_type": "code",
         "state": state,
         "scope": current_app.config.get("SPOTIFY_SCOPE"),
+        "redirect_uri": current_app.config.get("SPOTIFY_REDIRECT_URI"),
     }
 
     auth_url = f"{current_app.config.get('SPOTIFY_AUTH_URL')}?{urlencode(params)}"
@@ -191,6 +192,7 @@ def _exchange_code_for_tokens(code: str) -> dict:
     token_data = {
         "grant_type": "authorization_code",
         "code": code,
+        "redirect_uri": current_app.config.get("SPOTIFY_REDIRECT_URI"),
         "client_id": client_id,
         "client_secret": client_secret,
     }
@@ -236,6 +238,7 @@ def refresh_token_for_device(device_id: str) -> bool:
         "refresh_token": refresh_token,
         "client_id": client_id,
         "client_secret": client_secret,
+        "redirect_uri": current_app.config.get("SPOTIFY_REDIRECT_URI"),
     }
 
     try:
