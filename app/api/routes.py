@@ -28,7 +28,7 @@ from app.services import (
     parse_command,
     execute_command,
 )
-from app.services.whisper_service import validate_audio_format
+from app.services.whisper_service import validate_audio_format, convert_pcm_to_wav
 from app.api.models import ShortURL
 from app import db
 
@@ -376,12 +376,17 @@ def process_command() -> Response:
                 400,
             )
 
+        if audio_file.filename.lower().endswith(".pcm"):
+            # Ajuste os parâmetros conforme o seu padrão de gravação
+            audio_file = convert_pcm_to_wav(audio_file, sample_rate=16000, channels=1, sample_width=2)
+            audio_file.filename = "converted.wav"  # Para o Whisper saber o tipo
+
         if not validate_audio_format(audio_file):
             return (
                 jsonify(
                     {
                         "error": "Bad Request",
-                        "message": "Unsupported audio format. Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm",
+                        "message": "Unsupported audio format. Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm, pcm",
                     }
                 ),
                 400,
@@ -633,31 +638,44 @@ def device_status(device_id: str) -> Response:
         description: Internal server error
     """
     try:
-        from app.services.auth_service import get_device_status
+        from app.api.models import DeviceAuth
 
-        status = get_device_status(device_id)
-
-        if not status["exists"]:
+        device = DeviceAuth.get_by_device_id(device_id)
+        if not device:
             return (
                 jsonify(
                     {
-                        "error": "Not Found",
-                        "message": f"Device {device_id} not found",
                         "device_id": device_id,
+                        "registered": False,
+                        "authenticated": False,
+                        "message": "Device not found",
                     }
                 ),
                 404,
             )
 
-        return jsonify(status), 200
+        is_authenticated = not device.is_token_expired and device.has_required_scopes
+
+        return (
+            jsonify(
+                {
+                    "device_id": device_id,
+                    "registered": True,
+                    "authenticated": is_authenticated,
+                    "expires_at": device.expires_at.isoformat() if device.expires_at else None,
+                    "last_updated": device.updated_at.isoformat() if device.updated_at else None,
+                }
+            ),
+            200,
+        )
 
     except Exception as e:
-        current_app.logger.error(f"Error getting device status: {str(e)}")
+        current_app.logger.error(f"Error checking device status: {str(e)}")
         return (
             jsonify(
                 {
                     "error": "Internal Server Error",
-                    "message": "Failed to get device status",
+                    "message": "Failed to check device status",
                 }
             ),
             500,

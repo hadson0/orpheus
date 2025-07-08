@@ -12,6 +12,7 @@ from werkzeug.datastructures import FileStorage
 from flask import current_app
 import openai
 import requests
+import wave
 
 
 def transcribe_audio(audio_file: Union[FileStorage, BinaryIO]) -> str:
@@ -82,45 +83,14 @@ def transcribe_audio(audio_file: Union[FileStorage, BinaryIO]) -> str:
                 pass
 
 
-def validate_audio_format(audio_file: FileStorage) -> bool:
+def validate_audio_format(audio_file) -> bool:
     """
-    Validate if the audio file format is supported by Whisper.
-
-    Supported formats: mp3, mp4, mpeg, mpga, m4a, wav, webm
-
-    Args:
-        audio_file: Flask FileStorage object.
-
-    Returns:
-        bool: True if format is supported, False otherwise.
+    Validate if the uploaded audio file is in a supported format.
+    Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm, pcm
     """
-    if not audio_file or not audio_file.filename:
-        return False
-
-    supported_extensions = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm"}
-    supported_mimetypes = {
-        "audio/mpeg",
-        "audio/mp3",
-        "audio/mp4",
-        "audio/wav",
-        "audio/x-wav",
-        "audio/webm",
-        "audio/m4a",
-    }
-
+    allowed_extensions = {"mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "pcm"}
     filename = audio_file.filename.lower()
-    extension = "." + filename.split(".")[-1] if "." in filename else ""
-
-    mimetype = audio_file.mimetype.lower() if audio_file.mimetype else ""
-
-    is_valid = extension in supported_extensions or mimetype in supported_mimetypes
-
-    if not is_valid:
-        current_app.logger.warning(
-            f"Unsupported audio format: {filename} (mimetype: {mimetype})"
-        )
-
-    return is_valid
+    return any(filename.endswith(f".{ext}") for ext in allowed_extensions)
 
 
 def get_audio_duration(audio_file: Union[FileStorage, BinaryIO]) -> float:
@@ -209,3 +179,20 @@ def test_whisper_connection() -> bool:
     except Exception as e:
         current_app.logger.error(f"Whisper API test failed: {str(e)}")
         return False
+
+
+def convert_pcm_to_wav(pcm_file, sample_rate=16000, channels=1, sample_width=2):
+    """
+    Converts a PCM file-like object to a WAV file-like object.
+    Assumes 16-bit PCM by default.
+    """
+    pcm_file.seek(0)
+    pcm_data = pcm_file.read()
+    wav_buffer = io.BytesIO()
+    with wave.open(wav_buffer, "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(sample_width)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(pcm_data)
+    wav_buffer.seek(0)
+    return wav_buffer
