@@ -1,24 +1,25 @@
-"""
-API routes for Spotify Voice Bridge.
-
-This module defines all HTTP endpoints for the API, handling
-QR code generation, OAuth callbacks, voice commands, and token refresh.
-"""
+from __future__ import annotations
 
 import io
-import string
 import random
-from flask import (
-    Blueprint,
-    request,
-    jsonify,
-    Response,
-    render_template_string,
-    current_app,
-    redirect,
-)
+import string
+from http import HTTPStatus
+from typing import Dict, Any, Optional
+
 import qrcode
+from flask import (
+    Response,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    make_response,
+)
+
+from app import db
 from app.api import api_bp
+from app.api.models import ShortURL
 from app.services import (
     generate_spotify_auth_url,
     process_callback,
@@ -28,193 +29,79 @@ from app.services import (
     parse_command,
     execute_command,
 )
-from app.services.whisper_service import validate_audio_format, convert_pcm_to_wav
-from app.api.models import ShortURL
-from app import db
-
-SUCCESS_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Spotify Voice Bridge - Success</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #1DB954;
-            color: white;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            background-color: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-        }
-        .icon {
-            font-size: 4rem;
-            margin-bottom: 1rem;
-        }
-        h1 {
-            margin: 0 0 1rem 0;
-        }
-        p {
-            margin: 0;
-            opacity: 0.9;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="icon">✓</div>
-        <h1>Success!</h1>
-        <p>Your device has been connected to Spotify.</p>
-        <p>You can now close this window.</p>
-    </div>
-</body>
-</html>
-"""
-
-ERROR_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Spotify Voice Bridge - Error</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-            background-color: #E22134;
-            color: white;
-        }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            background-color: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-            max-width: 500px;
-        }
-        .icon {
-            font-size: 4rem;
-            margin-bottom: 1rem;
-        }
-        h1 {
-            margin: 0 0 1rem 0;
-        }
-        p {
-            margin: 0 0 1rem 0;
-            opacity: 0.9;
-        }
-        .error-details {
-            background-color: rgba(0, 0, 0, 0.2);
-            padding: 1rem;
-            border-radius: 5px;
-            font-size: 0.9rem;
-            text-align: left;
-            word-break: break-word;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="icon">✗</div>
-        <h1>Authentication Failed</h1>
-        <p>There was an error connecting your device to Spotify.</p>
-        <div class="error-details">{{ error_message }}</div>
-    </div>
-</body>
-</html>
-"""
+from app.services.whisper_service import validate_audio_format
 
 
-def generate_code(length=6):
+def _json(data: Dict[str, Any], status: HTTPStatus) -> Response:
+    """Return JSON response with status."""
+    return make_response(jsonify(data), status)
+
+
+def _html(html: str, status: HTTPStatus) -> Response:
+    """Return HTML response with status."""
+    return Response(html, status=status, mimetype="text/html")
+
+
+def _render_error_html(
+    msg: str, status: HTTPStatus = HTTPStatus.BAD_REQUEST
+) -> Response:
+    html_content = render_template("error.html", error_message=msg)
+    return _html(html_content, status)
+
+
+def _generate_code(length: int = 6) -> str:
     return "".join(random.choices(string.ascii_letters + string.digits, k=length))
+
+
+def _shorten_url(long_url: str) -> str:
+    """Return a short URL, creating it if needed."""
+    short: Optional[ShortURL] = ShortURL.query.filter_by(long_url=long_url).first()
+    if short:
+        return request.url_root.rstrip("/") + "/u/" + short.code
+
+    for _ in range(5):
+        code = _generate_code()
+        if not ShortURL.query.filter_by(code=code).first():
+            short = ShortURL(code=code, long_url=long_url)
+            db.session.add(short)
+            db.session.commit()
+            return request.url_root.rstrip("/") + "/u/" + code
+
+    raise RuntimeError("Could not generate unique code")
+
+
+def _create_qr_png(data: str) -> bytes:
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=2,
+        border=1,
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf.getvalue()
 
 
 @api_bp.route("/qr/<string:device_id>", methods=["GET"])
 def generate_qr_code(device_id: str) -> Response:
-    """
-    Generate QR code for device authentication.
-    ---
-    parameters:
-      - name: device_id
-        in: path
-        type: string
-        required: true
-        description: Device identifier
-    responses:
-      200:
-        description: PNG image with QR code
-        content:
-          image/png:
-            schema:
-              type: string
-              format: binary
-      400:
-        description: Invalid device ID
-      500:
-        description: Internal server error
-    """
-    try:
-        if not device_id or len(device_id) > 255:
-            return (
-                jsonify(
-                    {
-                        "error": "Invalid device ID",
-                        "message": "Device ID must be between 1 and 255 characters",
-                    }
-                ),
-                400,
-            )
-
-        auth_url = generate_spotify_auth_url(device_id)
-        current_app.logger.info(f"Generated Auth URL: {auth_url}")
-
-        # --- Always shorten the URL for QR code ---
-        # Check if already shortened
-        short = ShortURL.query.filter_by(long_url=auth_url).first()
-        if not short:
-            # Generate a unique code
-            for _ in range(5):
-                code = generate_code()
-                if not ShortURL.query.filter_by(code=code).first():
-                    break
-            else:
-                return jsonify({"error": "Could not generate unique code"}), 500
-
-            short = ShortURL(code=code, long_url=auth_url)
-            db.session.add(short)
-            db.session.commit()
-            current_app.logger.info(f"Shortened URL created: {short.code}")
-
-        short_url = request.url_root.rstrip("/") + "/u/" + short.code
-        current_app.logger.info(f"QR code will encode: {short_url}")
-
-        qr = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=2,
-            border=1,
+    """Return PNG QR code for the device's Spotify auth URL."""
+    if not (1 <= len(device_id) <= 255):
+        return _json(
+            {"error": "Invalid device ID", "message": "1-255 chars required"},
+            HTTPStatus.BAD_REQUEST,
         )
-        qr.add_data(short_url)
-        qr.make(fit=True)
 
-        img = qr.make_image(fill_color="black", back_color="white")
-        img_buffer = io.BytesIO()
-        img.save(img_buffer, format="PNG")
-        img_buffer.seek(0)
+    try:
+        auth_url = generate_spotify_auth_url(device_id)
+        short_url = _shorten_url(auth_url)
+        png_bytes = _create_qr_png(short_url)
 
         return Response(
-            img_buffer.getvalue(),
+            png_bytes,
             mimetype="image/png",
             headers={
                 "Content-Disposition": f'inline; filename="spotify_auth_{device_id}.png"',
@@ -223,512 +110,271 @@ def generate_qr_code(device_id: str) -> Response:
                 "Expires": "0",
             },
         )
-
-    except ValueError as e:
-        current_app.logger.error(f"Configuration error generating QR code: {str(e)}")
-        return jsonify({"error": "Configuration Error", "message": str(e)}), 500
-
-    except Exception as e:
-        current_app.logger.error(f"Error generating QR code: {str(e)}")
-        return (
-            jsonify(
-                {
-                    "error": "Internal Server Error",
-                    "message": "Failed to generate QR code",
-                }
-            ),
-            500,
+    except Exception as exc:
+        current_app.logger.exception("QR generation failed – %s", exc)
+        return _json(
+            {"error": "Internal Server Error", "message": "Failed to generate QR"},
+            HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
 
 @api_bp.route("/auth/callback", methods=["GET"])
 def auth_callback() -> Response:
-    """
-    Handle Spotify OAuth2 callback.
-    ---
-    parameters:
-      - name: code
-        in: query
-        type: string
-        required: false
-        description: Authorization code from Spotify
-      - name: state
-        in: query
-        type: string
-        required: false
-        description: State parameter for CSRF protection
-      - name: error
-        in: query
-        type: string
-        required: false
-        description: Error message from Spotify
-    responses:
-      200:
-        description: Success HTML page
-      400:
-        description: Error HTML page
-      500:
-        description: Internal server error
-    """
-    code = request.args.get("code")
-    state = request.args.get("state")
-    error = request.args.get("error")
+    code, state, err = (
+        request.args.get("code"),
+        request.args.get("state"),
+        request.args.get("error"),
+    )
 
-    if error:
-        error_description = request.args.get("error_description", "Unknown error")
-        current_app.logger.error(f"Spotify auth error: {error} - {error_description}")
-        return Response(
-            render_template_string(
-                ERROR_HTML, error_message=f"{error}: {error_description}"
-            ),
-            status=400,
-            mimetype="text/html",
-        )
+    if err:
+        desc = request.args.get("error_description", "Unknown error")
+        current_app.logger.error("Spotify auth error: %s – %s", err, desc)
+        return _render_error_html(f"{err}: {desc}", HTTPStatus.BAD_REQUEST)
 
     if not code or not state:
-        current_app.logger.error("Missing code or state in callback")
-        return Response(
-            render_template_string(
-                ERROR_HTML, error_message="Missing required parameters"
-            ),
-            status=400,
-            mimetype="text/html",
-        )
+        return _render_error_html("Missing required parameters", HTTPStatus.BAD_REQUEST)
 
     try:
-        success, message = process_callback(state, code)
-
+        success, msg = process_callback(state, code)
         if success:
-            current_app.logger.info(f"Successfully processed callback: {message}")
-            return Response(SUCCESS_HTML, status=200, mimetype="text/html")
+            html_content = render_template("success.html")
+            status = HTTPStatus.OK
         else:
-            return Response(
-                render_template_string(ERROR_HTML, error_message=message),
-                status=400,
-                mimetype="text/html",
-            )
+            html_content = render_template("error.html", error_message=msg)
+            status = HTTPStatus.BAD_REQUEST
+        return _html(html_content, status)
 
-    except ValueError as e:
-        current_app.logger.error(f"Callback processing error: {str(e)}")
-        return Response(
-            render_template_string(ERROR_HTML, error_message=str(e)),
-            status=400,
-            mimetype="text/html",
-        )
-
-    except Exception as e:
-        current_app.logger.error(f"Unexpected callback error: {str(e)}")
-        return Response(
-            render_template_string(
-                ERROR_HTML, error_message="An unexpected error occurred"
-            ),
-            status=500,
-            mimetype="text/html",
+    except ValueError as exc:
+        return _render_error_html(str(exc), HTTPStatus.BAD_REQUEST)
+    except Exception as exc:
+        current_app.logger.exception("Unexpected callback error – %s", exc)
+        return _render_error_html(
+            "An unexpected error occurred", HTTPStatus.INTERNAL_SERVER_ERROR
         )
 
 
 @api_bp.route("/command", methods=["POST"])
 def process_command() -> Response:
-    """
-    Process voice command from device.
-    ---
-    consumes:
-      - multipart/form-data
-    parameters:
-      - name: device_id
-        in: formData
-        type: string
-        required: true
-        description: Device identifier
-      - name: audio
-        in: formData
-        type: file
-        required: true
-        description: Audio file with voice command
-    responses:
-      200:
-        description: Command processed
-      400:
-        description: Bad request
-      401:
-        description: Unauthorized
-      500:
-        description: Internal server error
-    """
+    device_id = request.form.get("device_id")
+    if not device_id:
+        return _json({"error": "device_id is required"}, HTTPStatus.BAD_REQUEST)
+
+    audio = request.files.get("audio")
+    if not audio or audio.filename == "":
+        return _json({"error": "audio file is required"}, HTTPStatus.BAD_REQUEST)
+
+    if not validate_audio_format(audio):
+        return _json(
+            {
+                "error": "Unsupported audio format",
+                "supported": "mp3, mp4, mpeg, mpga, m4a, wav, webm",
+            },
+            HTTPStatus.BAD_REQUEST,
+        )
+
+    access_token = get_valid_token(device_id)
+    if not access_token:
+        return _json(
+            {
+                "error": "Unauthorized",
+                "message": "Device not authenticated or token refresh failed",
+                "device_id": device_id,
+            },
+            HTTPStatus.UNAUTHORIZED,
+        )
+
     try:
-        device_id = request.form.get("device_id")
-        if not device_id:
-            return (
-                jsonify({"error": "Bad Request", "message": "device_id is required"}),
-                400,
-            )
-
-        if "audio" not in request.files:
-            return (
-                jsonify({"error": "Bad Request", "message": "audio file is required"}),
-                400,
-            )
-
-        audio_file = request.files["audio"]
-        if audio_file.filename == "":
-            return (
-                jsonify({"error": "Bad Request", "message": "No audio file selected"}),
-                400,
-            )
-
-        if audio_file.filename.lower().endswith(".pcm"):
-            # Ajuste os parâmetros conforme o seu padrão de gravação
-            audio_file = convert_pcm_to_wav(audio_file, sample_rate=16000, channels=1, sample_width=2)
-            audio_file.filename = "converted.wav"  # Para o Whisper saber o tipo
-
-        if not validate_audio_format(audio_file):
-            return (
-                jsonify(
-                    {
-                        "error": "Bad Request",
-                        "message": "Unsupported audio format. Supported: mp3, mp4, mpeg, mpga, m4a, wav, webm, pcm",
-                    }
-                ),
-                400,
-            )
-
-        access_token = get_valid_token(device_id)
-        if not access_token:
-            return (
-                jsonify(
-                    {
-                        "error": "Unauthorized",
-                        "message": "Device not authenticated or token refresh failed",
-                        "device_id": device_id,
-                    }
-                ),
-                401,
-            )
-
-        try:
-            transcribed_text = transcribe_audio(audio_file)
-        except ValueError as e:
-            return jsonify({"error": "Transcription Error", "message": str(e)}), 400
-        except Exception as e:
-            current_app.logger.error(f"Transcription failed: {str(e)}")
-            return (
-                jsonify(
-                    {
-                        "error": "Transcription Failed",
-                        "message": "Failed to transcribe audio",
-                    }
-                ),
-                500,
-            )
-
-        command = parse_command(transcribed_text)
-
-        if not command:
-            return (
-                jsonify(
-                    {
-                        "success": True,
-                        "transcribed_text": transcribed_text,
-                        "command": None,
-                        "message": "No command detected in audio",
-                        "action_taken": False,
-                    }
-                ),
-                200,
-            )
-
-        result = execute_command(command, transcribed_text, device_id)
-
-        response_data = {
-            "success": result["success"],
-            "transcribed_text": transcribed_text,
-            "command": command,
-            "message": result["message"],
-            "action_taken": result["success"],
-        }
-
-        if "error" in result:
-            response_data["error"] = result["error"]
-
-        if "details" in result:
-            response_data["details"] = result["details"]
-
-        status_code = 200 if result["success"] else 400
-
-        current_app.logger.info(
-            f"Command processed - Device: {device_id}, "
-            f"Text: '{transcribed_text}', Command: {command}, "
-            f"Success: {result['success']}"
+        transcribed = transcribe_audio(audio)
+    except ValueError as e:
+        return _json(
+            {"error": "Transcription Error", "message": str(e)}, HTTPStatus.BAD_REQUEST
+        )
+    except Exception as exc:
+        current_app.logger.exception("Transcription failed – %s", exc)
+        return _json(
+            {"error": "Transcription Failed", "message": "Failed to transcribe audio"},
+            HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
-        return jsonify(response_data), status_code
-
-    except Exception as e:
-        current_app.logger.error(f"Unexpected error processing command: {str(e)}")
-        return (
-            jsonify(
-                {
-                    "error": "Internal Server Error",
-                    "message": "An unexpected error occurred",
-                }
-            ),
-            500,
+    command = parse_command(transcribed)
+    if not command:
+        return _json(
+            {
+                "success": True,
+                "transcribed_text": transcribed,
+                "command": None,
+                "message": "No command detected in audio",
+                "action_taken": False,
+            },
+            HTTPStatus.OK,
         )
+
+    cmd_name, name = command
+    result = execute_command(cmd_name, name, device_id)
+    current_app.logger.info(
+        "Command processed – Device:%s | '%s' → %s | ok=%s",
+        device_id,
+        transcribed,
+        command,
+        result["success"],
+    )
+
+    status = HTTPStatus.OK if result["success"] else HTTPStatus.BAD_REQUEST
+    payload = {
+        "success": result["success"],
+        "transcribed_text": transcribed,
+        "command": command,
+        "message": result["message"],
+        "action_taken": result["success"],
+        **{k: v for k, v in result.items() if k in {"error", "details"}},
+    }
+    return _json(payload, status)
 
 
 @api_bp.route("/refresh", methods=["POST"])
 def refresh_device_token() -> Response:
-    """
-    Refresh device Spotify token.
-    ---
-    consumes:
-      - application/json
-    parameters:
-      - name: device_id
-        in: body
-        required: true
-        schema:
-          type: object
-          properties:
-            device_id:
-              type: string
-              description: Device identifier
-    responses:
-      200:
-        description: Token refreshed
-      400:
-        description: Bad request or refresh failed
-      500:
-        description: Internal server error
-    """
+    if not request.is_json:
+        return _json(
+            {"error": "Content-Type must be application/json"}, HTTPStatus.BAD_REQUEST
+        )
+
+    device_id = (request.get_json() or {}).get("device_id")
+    if not device_id:
+        return _json({"error": "device_id is required"}, HTTPStatus.BAD_REQUEST)
+
     try:
-        if not request.is_json:
-            return (
-                jsonify(
-                    {
-                        "error": "Bad Request",
-                        "message": "Content-Type must be application/json",
-                    }
-                ),
-                400,
-            )
-        data = request.get_json()
-        device_id = data.get("device_id") if data else None
-
-        if not device_id:
-            return (
-                jsonify(
-                    {
-                        "error": "Bad Request",
-                        "message": "device_id is required in JSON body",
-                    }
-                ),
-                400,
-            )
-
-        success = refresh_token_for_device(device_id)
-
-        if success:
-            current_app.logger.info(
-                f"Successfully refreshed token for device: {device_id}"
-            )
-            return (
-                jsonify(
-                    {
-                        "success": True,
-                        "message": f"Token refreshed successfully for device {device_id}",
-                        "device_id": device_id,
-                    }
-                ),
-                200,
-            )
-        else:
-            current_app.logger.warning(
-                f"Failed to refresh token for device: {device_id}"
-            )
-            return (
-                jsonify(
-                    {
-                        "success": False,
-                        "message": f"Failed to refresh token for device {device_id}",
-                        "device_id": device_id,
-                        "error": "refresh_failed",
-                    }
-                ),
-                400,
-            )
-
-    except Exception as e:
-        current_app.logger.error(f"Unexpected error refreshing token: {str(e)}")
-        return (
-            jsonify(
+        if refresh_token_for_device(device_id):
+            return _json(
                 {
-                    "error": "Internal Server Error",
-                    "message": "An unexpected error occurred",
-                }
-            ),
-            500,
+                    "success": True,
+                    "message": f"Token refreshed for device {device_id}",
+                    "device_id": device_id,
+                },
+                HTTPStatus.OK,
+            )
+        return _json(
+            {
+                "success": False,
+                "message": f"Failed to refresh token for device {device_id}",
+                "device_id": device_id,
+                "error": "refresh_failed",
+            },
+            HTTPStatus.BAD_REQUEST,
+        )
+    except Exception as exc:
+        current_app.logger.exception("Unexpected error refreshing token – %s", exc)
+        return _json(
+            {
+                "error": "Internal Server Error",
+                "message": "An unexpected error occurred",
+            },
+            HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
 
 @api_bp.route("/u/<string:code>", methods=["GET"])
-def redirect_short_url(code):
-    """
-    Redirect to long URL from short code.
-    ---
-    parameters:
-      - name: code
-        in: path
-        type: string
-        required: true
-        description: Short URL code
-    responses:
-      302:
-        description: Redirect to long URL
-      404:
-        description: Code not found
-    """
+def redirect_short_url(code: str) -> Response:
     short = ShortURL.query.filter_by(code=code).first()
-    if not short:
-        return jsonify({"error": "Not found"}), 404
-    return redirect(short.long_url)
-
-
-# Additional utility endpoints (optional)
+    return (
+        redirect(short.long_url)
+        if short
+        else _json({"error": "Not found"}, HTTPStatus.NOT_FOUND)
+    )
 
 
 @api_bp.route("/health", methods=["GET"])
 def health_check() -> Response:
-    """
-    Health check endpoint.
-    ---
-    responses:
-      200:
-        description: Service is healthy
-    """
-    return (
-        jsonify(
-            {
-                "status": "healthy",
-                "service": "Spotify Voice Bridge API",
-                "version": "1.0.0",
-            }
-        ),
-        200,
+    return _json(
+        {
+            "status": "healthy",
+            "service": "Spotify Voice Bridge API",
+            "version": "1.0.0",
+        },
+        HTTPStatus.OK,
     )
 
 
 @api_bp.route("/device/<string:device_id>/status", methods=["GET"])
 def device_status(device_id: str) -> Response:
-    """
-    Get device authentication status.
-    ---
-    parameters:
-      - name: device_id
-        in: path
-        type: string
-        required: true
-        description: Device identifier
-    responses:
-      200:
-        description: Device status
-      404:
-        description: Device not found
-      500:
-        description: Internal server error
-    """
-    try:
-        from app.api.models import DeviceAuth
+    from app.api.models import DeviceAuth
 
+    try:
         device = DeviceAuth.get_by_device_id(device_id)
         if not device:
-            return (
-                jsonify(
-                    {
-                        "device_id": device_id,
-                        "registered": False,
-                        "authenticated": False,
-                        "message": "Device not found",
-                    }
-                ),
-                404,
-            )
-
-        is_authenticated = not device.is_token_expired and device.has_required_scopes
-
-        return (
-            jsonify(
+            return _json(
                 {
                     "device_id": device_id,
-                    "registered": True,
-                    "authenticated": is_authenticated,
-                    "expires_at": device.expires_at.isoformat() if device.expires_at else None,
-                    "last_updated": device.updated_at.isoformat() if device.updated_at else None,
-                }
-            ),
-            200,
-        )
+                    "registered": False,
+                    "authenticated": False,
+                    "message": "Device not found",
+                },
+                HTTPStatus.NOT_FOUND,
+            )
 
-    except Exception as e:
-        current_app.logger.error(f"Error checking device status: {str(e)}")
-        return (
-            jsonify(
-                {
-                    "error": "Internal Server Error",
-                    "message": "Failed to check device status",
-                }
-            ),
-            500,
+        return _json(
+            {
+                "device_id": device_id,
+                "registered": True,
+                "authenticated": not device.is_token_expired
+                and device.has_required_scopes,
+                "expires_at": (
+                    device.expires_at.isoformat() if device.expires_at else None
+                ),
+                "last_updated": (
+                    device.updated_at.isoformat() if device.updated_at else None
+                ),
+            },
+            HTTPStatus.OK,
+        )
+    except Exception as exc:
+        current_app.logger.exception("Device status error – %s", exc)
+        return _json(
+            {
+                "error": "Internal Server Error",
+                "message": "Failed to check device status",
+            },
+            HTTPStatus.INTERNAL_SERVER_ERROR,
         )
 
 
 @api_bp.route("/", methods=["GET"])
 def api_info() -> Response:
-    """
-    API information and available endpoints.
-    ---
-    responses:
-      200:
-        description: API info and endpoints
-    """
-    return (
-        jsonify(
-            {
-                "service": "Spotify Voice Bridge API",
-                "version": "1.0.0",
-                "endpoints": {
-                    "qr_code": {
-                        "method": "GET",
-                        "path": "/qr/<device_id>",
-                        "description": "Generate QR code for device authentication",
-                    },
-                    "auth_callback": {
-                        "method": "GET",
-                        "path": "/auth/callback",
-                        "description": "OAuth2 callback endpoint (used by Spotify)",
-                    },
-                    "command": {
-                        "method": "POST",
-                        "path": "/command",
-                        "description": "Process voice command from device",
-                    },
-                    "refresh": {
-                        "method": "POST",
-                        "path": "/refresh",
-                        "description": "Manually refresh device token",
-                    },
-                    "health": {
-                        "method": "GET",
-                        "path": "/health",
-                        "description": "Health check endpoint",
-                    },
-                    "device_status": {
-                        "method": "GET",
-                        "path": "/device/<device_id>/status",
-                        "description": "Get device authentication status",
-                    },
+    return _json(
+        {
+            "service": "Spotify Voice Bridge API",
+            "version": "1.0.0",
+            "endpoints": {
+                "qr_code": {
+                    "method": "GET",
+                    "path": "/qr/<device_id>",
+                    "description": "Generate QR code",
                 },
-            }
-        ),
-        200,
+                "auth_cb": {
+                    "method": "GET",
+                    "path": "/auth/callback",
+                    "description": "OAuth2 callback",
+                },
+                "command": {
+                    "method": "POST",
+                    "path": "/command",
+                    "description": "Process voice command",
+                },
+                "refresh": {
+                    "method": "POST",
+                    "path": "/refresh",
+                    "description": "Manually refresh token",
+                },
+                "health": {
+                    "method": "GET",
+                    "path": "/health",
+                    "description": "Health check",
+                },
+                "dev_stat": {
+                    "method": "GET",
+                    "path": "/device/<device_id>/status",
+                    "description": "Device status",
+                },
+            },
+        },
+        HTTPStatus.OK,
     )

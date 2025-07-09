@@ -1,236 +1,142 @@
-"""
-Database models for Spotify Voice Bridge API.
+from __future__ import annotations
 
-This module defines the SQLAlchemy models for storing device authentication data with encrypted tokens.
-"""
+import datetime as dt
+from typing import Optional, Set, List
 
-from typing import Optional
-from datetime import datetime, timedelta, timezone
+from flask import current_app
+from sqlalchemy import event
 from app import db
 from app.utils.encryption import encrypt, decrypt
-from sqlalchemy import event
-from flask import current_app
+
+UTC = dt.timezone.utc
+REQUIRED_SCOPES: Set[str] = {"user-read-playback-state", "user-modify-playback-state"}
 
 
-class DeviceAuth(db.Model):
-    """
-    Model for storing device authentication data.
+def _utcnow() -> dt.datetime:
+    return dt.datetime.utcnow()
 
-    Each device has its own Spotify authentication tokens stored in an encrypted format for security.
-    """
+
+def _log_exc(msg: str, exc: Exception) -> None:
+    current_app.logger.error("%s – %s", msg, exc)
+
+
+class TimestampMixin:
+    """Adds created_at and updated_at columns."""
+
+    created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class DeviceAuth(TimestampMixin, db.Model):
+    """Stores encrypted Spotify OAuth credentials per device."""
 
     __tablename__ = "device_auth"
 
-    # Primary key - unique device identifier
     device_id = db.Column(db.String(255), primary_key=True)
-
     encrypted_access_token = db.Column(db.LargeBinary, nullable=False)
     encrypted_refresh_token = db.Column(db.LargeBinary, nullable=False)
-
-    expires_at = db.Column(db.DateTime, nullable=False)
+    expires_at = db.Column(db.DateTime(timezone=True), nullable=False)
     scope = db.Column(db.String(512), nullable=False)
-
-    # Timestamps
-    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = db.Column(
-        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
-    )
-
-    # User information (for debugging/logging)
-    spotify_user_id = db.Column(db.String(255), nullable=True)
+    spotify_user_id = db.Column(db.String(255))
 
     def __repr__(self) -> str:
-        """String representation of DeviceAuth instance."""
         return f"<DeviceAuth {self.device_id}>"
 
     def set_tokens(
-        self, access_token: str, refresh_token: str, expires_in: int, scope: str
+        self,
+        access_token: str,
+        refresh_token: str,
+        expires_in: int,
+        scope: str,
     ) -> None:
-        """
-        Set and encrypt authentication tokens.
-
-        Args:
-            access_token: Spotify access token.
-            refresh_token: Spotify refresh token.
-            expires_in: Token lifetime in seconds.
-            scope: Space-separated list of granted scopes.
-        """
-        if not all([access_token, refresh_token, expires_in, scope]):
+        """Encrypt and save new tokens."""
+        if not all((access_token, refresh_token, expires_in, scope)):
             raise ValueError("All token parameters are required")
-
         try:
             self.encrypted_access_token = encrypt(access_token)
             self.encrypted_refresh_token = encrypt(refresh_token)
-
-            self.expires_at = datetime.now(timezone.utc) + timedelta(
-                seconds=expires_in
-            )
-            self.updated_at = datetime.now(timezone.utc)
-
+            self.expires_at = _utcnow() + dt.timedelta(seconds=expires_in)
             self.scope = scope
-
             current_app.logger.info(
-                f"Tokens set for device {self.device_id}, expires at {self.expires_at}"
+                "Tokens set for device %s – expires at %s",
+                self.device_id,
+                self.expires_at.isoformat(),
             )
-
-        except Exception as e:
-            current_app.logger.error(
-                f"Failed to set tokens for device {self.device_id}: {str(e)}"
-            )
+        except Exception as exc:
+            _log_exc(f"Failed to set tokens for {self.device_id}", exc)
             raise
 
     @property
     def access_token(self) -> str:
-        """
-        Get decrypted access token.
-
-        Returns:
-            str: The decrypted access token.
-
-        Raises:
-            ValueError: If decryption fails.
-        """
         try:
             return decrypt(self.encrypted_access_token)
-        except Exception as e:
-            current_app.logger.error(
-                f"Failed to decrypt access token for device {self.device_id}: {str(e)}"
-            )
-            raise ValueError("Failed to decrypt access token")
+        except Exception as exc:
+            _log_exc(f"Access token decrypt failed for {self.device_id}", exc)
+            raise ValueError("Failed to decrypt access token") from exc
 
     @property
     def refresh_token(self) -> str:
-        """
-        Get decrypted refresh token.
-
-        Returns:
-            str: The decrypted refresh token.
-
-        Raises:
-            ValueError: If decryption fails.
-        """
         try:
             return decrypt(self.encrypted_refresh_token)
-        except Exception as e:
-            current_app.logger.error(
-                f"Failed to decrypt refresh token for device {self.device_id}: {str(e)}"
-            )
-            raise ValueError("Failed to decrypt refresh token")
+        except Exception as exc:
+            _log_exc(f"Refresh token decrypt failed for {self.device_id}", exc)
+            raise ValueError("Failed to decrypt refresh token") from exc
 
     @property
     def is_token_expired(self) -> bool:
-        """
-        Check if the access token is expired.
-
-        Returns True if the token is expired or will expire within the next 60 seconds.
-        This buffer helps prevent edge cases where the token expires during use.
-
-        Returns:
-            bool: True if token is expired or about to expire, False otherwise.
-        """
+        """True if token expires within 60 seconds."""
         if not self.expires_at:
             return True
-
-        # Add 60-second buffer to prevent edge cases
-        expiry_with_buffer = self.expires_at - timedelta(seconds=60)
-        is_expired = datetime.utcnow() >= expiry_with_buffer
-
-        if is_expired:
-            current_app.logger.debug(
-                f"Token for device {self.device_id} is expired or about to expire"
-            )
-
-        return is_expired
+        return _utcnow() >= self.expires_at - dt.timedelta(seconds=60)
 
     @property
-    def time_until_expiry(self) -> Optional[timedelta]:
-        """
-        Get time remaining until token expiry.
-
-        Returns:
-            Optional[timedelta]: Time until expiry, or None if already expired.
-        """
+    def time_until_expiry(self) -> Optional[dt.timedelta]:
         if not self.expires_at:
             return None
-
-        remaining = self.expires_at - datetime.utcnow()
+        remaining = self.expires_at - _utcnow()
         return remaining if remaining.total_seconds() > 0 else None
 
     @property
     def has_required_scopes(self) -> bool:
-        """
-        Check if the device has all required Spotify scopes.
-
-        Returns:
-            bool: True if all required scopes are present.
-        """
-        required_scopes = {"user-read-playback-state", "user-modify-playback-state"}
-        granted_scopes = set(self.scope.split()) if self.scope else set()
-        return required_scopes.issubset(granted_scopes)
+        granted = set(self.scope.split()) if self.scope else set()
+        return REQUIRED_SCOPES.issubset(granted)
 
     def update_spotify_user_id(self, user_id: str) -> None:
-        """
-        Update the Spotify user ID associated with this device.
-
-        Args:
-            user_id: Spotify user ID.
-        """
         self.spotify_user_id = user_id
-        self.updated_at = datetime.utcnow()
+        self.updated_at = _utcnow()
 
     @classmethod
     def get_by_device_id(cls, device_id: str) -> Optional["DeviceAuth"]:
-        """
-        Get a device by its ID.
-
-        Args:
-            device_id: The device identifier.
-
-        Returns:
-            Optional[DeviceAuth]: The device instance or None if not found.
-        """
         return cls.query.filter_by(device_id=device_id).first()
 
     @classmethod
     def delete_expired_devices(cls, days: int = 30) -> int:
-        """
-        Delete devices that haven't been updated in the specified number of days.
-
-        Args:
-            days: Number of days of inactivity before deletion.
-
-        Returns:
-            int: Number of devices deleted.
-        """
-        cutoff_date = datetime.utcnow() - timedelta(days=days)
-        expired_devices = cls.query.filter(cls.updated_at < cutoff_date).all()
-
-        count = len(expired_devices)
-        for device in expired_devices:
+        """Delete devices not updated for `days` days. Returns count."""
+        cutoff = _utcnow() - dt.timedelta(days=days)
+        expired: List["DeviceAuth"] = cls.query.filter(cls.updated_at < cutoff).all()
+        for device in expired:
             db.session.delete(device)
-
-        if count > 0:
+        if expired:
             db.session.commit()
-            current_app.logger.info(f"Deleted {count} expired devices")
-
-        return count
+            current_app.logger.info("Deleted %s expired devices", len(expired))
+        return len(expired)
 
 
 @event.listens_for(DeviceAuth, "before_insert")
-def device_before_insert(mapper, connection, target):
-    """Log device creation."""
-    current_app.logger.info(f"Creating new device: {target.device_id}")
+def _before_insert(_, __, target):
+    current_app.logger.info("Creating new device: %s", target.device_id)
 
 
 @event.listens_for(DeviceAuth, "before_delete")
-def device_before_delete(mapper, connection, target):
-    """Log device deletion."""
-    current_app.logger.info(f"Deleting device: {target.device_id}")
+def _before_delete(_, __, target):
+    current_app.logger.info("Deleting device: %s", target.device_id)
 
 
-class ShortURL(db.Model):
+class ShortURL(TimestampMixin, db.Model):
     __tablename__ = "short_urls"
+
     id = db.Column(db.Integer, primary_key=True)
     code = db.Column(db.String(16), unique=True, nullable=False)
     long_url = db.Column(db.String(2048), nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
